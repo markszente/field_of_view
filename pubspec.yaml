@@ -1,7 +1,7 @@
 name: field_of_view
-description: "A new Flutter plugin project."
+description: "A Flutter plugin to get the camera field of view on Android and iOS."
 version: 0.0.1
-homepage:
+repository: https://github.com/markszente/field_of_view
 
 environment:
   sdk: ^3.10.3
