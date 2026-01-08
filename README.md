@@ -45,23 +45,6 @@ The `FieldOfViewResponse` contains:
 
 > **Note:** The FOV values represent the camera sensor's native orientation (landscape), so horizontal FOV will typically be larger than vertical FOV, regardless of device orientation.
 
-## Platform-specific notes
-
-### iOS
-
-Add the camera usage description to your app's `Info.plist`:
-
-```xml
-<key>NSCameraUsageDescription</key>
-<string>This app needs camera access to determine the field of view.</string>
-```
-
-The plugin uses `AVCaptureDevice` to query camera characteristics. No runtime permission prompt is shown, but the usage description key must be present.
-
-### Android
-
-No permissions required. The plugin uses Camera2 API's `CameraCharacteristics` to read static sensor metadata.
-
 ## Error handling
 
 The plugin throws `PlatformException` with the following error codes:
