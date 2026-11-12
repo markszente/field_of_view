@@ -128,6 +128,16 @@ func deepHashMessages(value: Any?, hasher: inout Hasher) {
 
     
 
+/// What the heading of a [PoseSample] is measured against.
+enum HeadingSource: Int {
+  /// Gyroscope, accelerometer and compass fused: degrees from true north
+  /// (see [PoseSample.trueNorth]), as wrong as the compass is.
+  case fused = 0
+  /// Gyroscope and accelerometer only: degrees from wherever the device
+  /// pointed when the source was chosen. No compass error, a slow drift.
+  case gyro = 1
+}
+
 /// Response containing field of view information from the camera.
 ///
 /// Generated class from Pigeon that represents data sent in messages.
@@ -161,11 +171,82 @@ struct FieldOfViewResponse: Hashable {
   }
 }
 
+/// Where the back camera points.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PoseSample: Hashable {
+  /// The bearing of the camera's axis, degrees clockwise, 0–360. From north
+  /// with [HeadingSource.fused]; from an arbitrary direction with
+  /// [HeadingSource.gyro].
+  var azimuth: Double
+  /// The camera axis above the horizontal, degrees (−90 … 90).
+  var pitch: Double
+  /// The rotation of the device about the camera's axis, degrees: 0 with
+  /// the device upright in portrait, positive when its right edge is
+  /// higher than its left.
+  var roll: Double
+  /// The platform's estimate of the heading error, degrees; negative when
+  /// it has none.
+  var accuracy: Double
+  var source: HeadingSource
+  /// Whether a fused azimuth is from true north. False when the platform
+  /// could only give magnetic north (no position to work out the
+  /// declination from).
+  var trueNorth: Bool
+  var timestampMs: Int64
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PoseSample? {
+    let azimuth = pigeonVar_list[0] as! Double
+    let pitch = pigeonVar_list[1] as! Double
+    let roll = pigeonVar_list[2] as! Double
+    let accuracy = pigeonVar_list[3] as! Double
+    let source = pigeonVar_list[4] as! HeadingSource
+    let trueNorth = pigeonVar_list[5] as! Bool
+    let timestampMs = pigeonVar_list[6] as! Int64
+
+    return PoseSample(
+      azimuth: azimuth,
+      pitch: pitch,
+      roll: roll,
+      accuracy: accuracy,
+      source: source,
+      trueNorth: trueNorth,
+      timestampMs: timestampMs
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      azimuth,
+      pitch,
+      roll,
+      accuracy,
+      source,
+      trueNorth,
+      timestampMs,
+    ]
+  }
+  static func == (lhs: PoseSample, rhs: PoseSample) -> Bool {
+    return deepEqualsMessages(lhs.toList(), rhs.toList())  }
+  func hash(into hasher: inout Hasher) {
+    deepHashMessages(value: toList(), hasher: &hasher)
+  }
+}
+
 private class MessagesPigeonCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
     case 129:
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return HeadingSource(rawValue: enumResultAsInt)
+      }
+      return nil
+    case 130:
       return FieldOfViewResponse.fromList(self.readValue() as! [Any?])
+    case 131:
+      return PoseSample.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
     }
@@ -174,8 +255,14 @@ private class MessagesPigeonCodecReader: FlutterStandardReader {
 
 private class MessagesPigeonCodecWriter: FlutterStandardWriter {
   override func writeValue(_ value: Any) {
-    if let value = value as? FieldOfViewResponse {
+    if let value = value as? HeadingSource {
       super.writeByte(129)
+      super.writeValue(value.rawValue)
+    } else if let value = value as? FieldOfViewResponse {
+      super.writeByte(130)
+      super.writeValue(value.toList())
+    } else if let value = value as? PoseSample {
+      super.writeByte(131)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -197,12 +284,28 @@ class MessagesPigeonCodec: FlutterStandardMessageCodec, @unchecked Sendable {
   static let shared = MessagesPigeonCodec(readerWriter: MessagesPigeonCodecReaderWriter())
 }
 
+var messagesPigeonMethodCodec = FlutterStandardMethodCodec(readerWriter: MessagesPigeonCodecReaderWriter());
+
 /// Host API for getting camera field of view information.
 ///
 /// Generated protocol from Pigeon that represents a handler of messages from Flutter.
 protocol FieldOfViewHostApi {
-  /// Gets the field of view from the device's back camera.
+  /// Gets the field of view from the device's back camera, for the full
+  /// sensor in its default format.
   func getFieldOfView() throws -> FieldOfViewResponse
+  /// The field of view of the stream a running camera delivers.
+  ///
+  /// [cameraId] is the platform's id of the camera (the `camera` package's
+  /// `CameraDescription.name`); null picks the back wide camera. [width]
+  /// and [height] are the stream's size in pixels, in the sensor's own
+  /// (landscape) orientation. Call it after the camera has started: the
+  /// angles depend on the format the session chose.
+  func getStreamFieldOfView(cameraId: String?, width: Int64, height: Int64) throws -> FieldOfViewResponse
+  /// Chooses what the pose stream's azimuth is measured against.
+  func setHeadingSource(source: HeadingSource) throws
+  /// Where the device is, for the magnetic declination (Android; iOS works
+  /// it out from its own location).
+  func setLocation(latitude: Double, longitude: Double, altitude: Double) throws
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -211,7 +314,8 @@ class FieldOfViewHostApiSetup {
   /// Sets up an instance of `FieldOfViewHostApi` to handle messages through the `binaryMessenger`.
   static func setUp(binaryMessenger: FlutterBinaryMessenger, api: FieldOfViewHostApi?, messageChannelSuffix: String = "") {
     let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-    /// Gets the field of view from the device's back camera.
+    /// Gets the field of view from the device's back camera, for the full
+    /// sensor in its default format.
     let getFieldOfViewChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.getFieldOfView\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       getFieldOfViewChannel.setMessageHandler { _, reply in
@@ -225,5 +329,128 @@ class FieldOfViewHostApiSetup {
     } else {
       getFieldOfViewChannel.setMessageHandler(nil)
     }
+    /// The field of view of the stream a running camera delivers.
+    ///
+    /// [cameraId] is the platform's id of the camera (the `camera` package's
+    /// `CameraDescription.name`); null picks the back wide camera. [width]
+    /// and [height] are the stream's size in pixels, in the sensor's own
+    /// (landscape) orientation. Call it after the camera has started: the
+    /// angles depend on the format the session chose.
+    let getStreamFieldOfViewChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.getStreamFieldOfView\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      getStreamFieldOfViewChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let cameraIdArg: String? = nilOrValue(args[0])
+        let widthArg = args[1] as! Int64
+        let heightArg = args[2] as! Int64
+        do {
+          let result = try api.getStreamFieldOfView(cameraId: cameraIdArg, width: widthArg, height: heightArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      getStreamFieldOfViewChannel.setMessageHandler(nil)
+    }
+    /// Chooses what the pose stream's azimuth is measured against.
+    let setHeadingSourceChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.setHeadingSource\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setHeadingSourceChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let sourceArg = args[0] as! HeadingSource
+        do {
+          try api.setHeadingSource(source: sourceArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      setHeadingSourceChannel.setMessageHandler(nil)
+    }
+    /// Where the device is, for the magnetic declination (Android; iOS works
+    /// it out from its own location).
+    let setLocationChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.setLocation\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setLocationChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let latitudeArg = args[0] as! Double
+        let longitudeArg = args[1] as! Double
+        let altitudeArg = args[2] as! Double
+        do {
+          try api.setLocation(latitude: latitudeArg, longitude: longitudeArg, altitude: altitudeArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      setLocationChannel.setMessageHandler(nil)
+    }
   }
 }
+
+private class PigeonStreamHandler<ReturnType>: NSObject, FlutterStreamHandler {
+  private let wrapper: PigeonEventChannelWrapper<ReturnType>
+  private var pigeonSink: PigeonEventSink<ReturnType>? = nil
+
+  init(wrapper: PigeonEventChannelWrapper<ReturnType>) {
+    self.wrapper = wrapper
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink)
+    -> FlutterError?
+  {
+    pigeonSink = PigeonEventSink<ReturnType>(events)
+    wrapper.onListen(withArguments: arguments, sink: pigeonSink!)
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    pigeonSink = nil
+    wrapper.onCancel(withArguments: arguments)
+    return nil
+  }
+}
+
+class PigeonEventChannelWrapper<ReturnType> {
+  func onListen(withArguments arguments: Any?, sink: PigeonEventSink<ReturnType>) {}
+  func onCancel(withArguments arguments: Any?) {}
+}
+
+class PigeonEventSink<ReturnType> {
+  private let sink: FlutterEventSink
+
+  init(_ sink: @escaping FlutterEventSink) {
+    self.sink = sink
+  }
+
+  func success(_ value: ReturnType) {
+    sink(value)
+  }
+
+  func error(code: String, message: String?, details: Any?) {
+    sink(FlutterError(code: code, message: message, details: details))
+  }
+
+  func endOfStream() {
+    sink(FlutterEndOfEventStream)
+  }
+
+}
+
+class PoseSamplesStreamHandler: PigeonEventChannelWrapper<PoseSample> {
+  static func register(with messenger: FlutterBinaryMessenger,
+                      instanceName: String = "",
+                      streamHandler: PoseSamplesStreamHandler) {
+    var channelName = "dev.flutter.pigeon.field_of_view.PoseEvents.poseSamples"
+    if !instanceName.isEmpty {
+      channelName += ".\(instanceName)"
+    }
+    let internalStreamHandler = PigeonStreamHandler<PoseSample>(wrapper: streamHandler)
+    let channel = FlutterEventChannel(name: channelName, binaryMessenger: messenger, codec: messagesPigeonMethodCodec)
+    channel.setStreamHandler(internalStreamHandler)
+  }
+}
+      

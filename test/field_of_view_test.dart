@@ -57,6 +57,53 @@ void main() {
     });
   });
 
+  group('stream field of view', () {
+    test('passes the camera and the stream size to the host', () async {
+      List<Object?>? received;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMessageHandler(
+            'dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.getStreamFieldOfView',
+            (ByteData? message) async {
+              final codec = FieldOfViewHostApi.pigeonChannelCodec;
+              received = codec.decodeMessage(message) as List<Object?>;
+              return codec.encodeMessage([
+                FieldOfViewResponse(horizontalFov: 67.4, verticalFov: 41.1),
+              ]);
+            },
+          );
+
+      final response = await FieldOfView().getStreamFieldOfView(
+        cameraId: '0',
+        width: 1920,
+        height: 1080,
+      );
+
+      expect(received, ['0', 1920, 1080]);
+      expect(response.horizontalFov, 67.4);
+      expect(response.verticalFov, 41.1);
+    });
+
+    test('setHeadingSource and setLocation reach the host', () async {
+      final calls = <String, List<Object?>>{};
+      for (final method in ['setHeadingSource', 'setLocation']) {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMessageHandler(
+              'dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.$method',
+              (ByteData? message) async {
+                final codec = FieldOfViewHostApi.pigeonChannelCodec;
+                calls[method] = codec.decodeMessage(message) as List<Object?>;
+                return codec.encodeMessage([null]);
+              },
+            );
+      }
+      final fov = FieldOfView();
+      await fov.setHeadingSource(HeadingSource.gyro);
+      await fov.setLocation(latitude: 47.5, longitude: 19.0, altitude: 120);
+      expect(calls['setHeadingSource'], [HeadingSource.gyro]);
+      expect(calls['setLocation'], [47.5, 19.0, 120.0]);
+    });
+  });
+
   group('FieldOfViewResponse', () {
     test('equality works correctly', () {
       final response1 = FieldOfViewResponse(
