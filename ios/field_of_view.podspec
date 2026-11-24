@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'field_of_view'
-  s.version          = '0.0.1'
+  s.version          = '0.1.0'
   s.summary          = 'A new Flutter plugin project.'
   s.description      = <<-DESC
 A new Flutter plugin project.
@@ -15,6 +15,7 @@ A new Flutter plugin project.
   s.source           = { :path => '.' }
   s.source_files = 'field_of_view/Sources/field_of_view/**/*'
   s.dependency 'Flutter'
+  s.frameworks = 'AVFoundation', 'CoreMotion'
   s.platform = :ios, '13.0'
 
   # Flutter.framework does not contain a i386 slice.

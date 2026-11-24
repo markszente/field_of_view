@@ -17,13 +17,25 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   FieldOfViewResponse? _fovResponse;
+  PoseSample? _pose;
   String? _error;
   final _fieldOfViewPlugin = FieldOfView();
+  StreamSubscription<PoseSample>? _poses;
 
   @override
   void initState() {
     super.initState();
     initPlatformState();
+    _poses = _fieldOfViewPlugin.poses.listen(
+      (pose) => setState(() => _pose = pose),
+      onError: (Object e) => setState(() => _error = 'No pose: $e'),
+    );
+  }
+
+  @override
+  void dispose() {
+    _poses?.cancel();
+    super.dispose();
   }
 
   Future<void> initPlatformState() async {
@@ -62,6 +74,16 @@ class _MyAppState extends State<MyApp> {
                     Text(
                       'Vertical FOV: ${_fovResponse!.verticalFov.toStringAsFixed(2)}°',
                     ),
+                    const SizedBox(height: 24),
+                    if (_pose != null)
+                      Text(
+                        'Azimuth ${_pose!.azimuth.toStringAsFixed(1)}°'
+                        '${_pose!.trueNorth ? '' : ' (magnetic)'}\n'
+                        'Pitch ${_pose!.pitch.toStringAsFixed(1)}°   '
+                        'Roll ${_pose!.roll.toStringAsFixed(1)}°\n'
+                        'Accuracy ±${_pose!.accuracy.toStringAsFixed(0)}°',
+                        textAlign: TextAlign.center,
+                      ),
                   ],
                 )
               : const CircularProgressIndicator(),

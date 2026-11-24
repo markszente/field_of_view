@@ -78,6 +78,26 @@ class FlutterError (
   val details: Any? = null
 ) : Throwable()
 
+/** What the heading of a [PoseSample] is measured against. */
+enum class HeadingSource(val raw: Int) {
+  /**
+   * Gyroscope, accelerometer and compass fused: degrees from true north
+   * (see [PoseSample.trueNorth]), as wrong as the compass is.
+   */
+  FUSED(0),
+  /**
+   * Gyroscope and accelerometer only: degrees from wherever the device
+   * pointed when the source was chosen. No compass error, a slow drift.
+   */
+  GYRO(1);
+
+  companion object {
+    fun ofRaw(raw: Int): HeadingSource? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
 /**
  * Response containing field of view information from the camera.
  *
@@ -114,12 +134,92 @@ data class FieldOfViewResponse (
 
   override fun hashCode(): Int = toList().hashCode()
 }
+
+/**
+ * Where the back camera points.
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class PoseSample (
+  /**
+   * The bearing of the camera's axis, degrees clockwise, 0–360. From north
+   * with [HeadingSource.fused]; from an arbitrary direction with
+   * [HeadingSource.gyro].
+   */
+  val azimuth: Double,
+  /** The camera axis above the horizontal, degrees (−90 … 90). */
+  val pitch: Double,
+  /**
+   * The rotation of the device about the camera's axis, degrees: 0 with
+   * the device upright in portrait, positive when its right edge is
+   * higher than its left.
+   */
+  val roll: Double,
+  /**
+   * The platform's estimate of the heading error, degrees; negative when
+   * it has none.
+   */
+  val accuracy: Double,
+  val source: HeadingSource,
+  /**
+   * Whether a fused azimuth is from true north. False when the platform
+   * could only give magnetic north (no position to work out the
+   * declination from).
+   */
+  val trueNorth: Boolean,
+  val timestampMs: Long
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): PoseSample {
+      val azimuth = pigeonVar_list[0] as Double
+      val pitch = pigeonVar_list[1] as Double
+      val roll = pigeonVar_list[2] as Double
+      val accuracy = pigeonVar_list[3] as Double
+      val source = pigeonVar_list[4] as HeadingSource
+      val trueNorth = pigeonVar_list[5] as Boolean
+      val timestampMs = pigeonVar_list[6] as Long
+      return PoseSample(azimuth, pitch, roll, accuracy, source, trueNorth, timestampMs)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      azimuth,
+      pitch,
+      roll,
+      accuracy,
+      source,
+      trueNorth,
+      timestampMs,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other !is PoseSample) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    return MessagesPigeonUtils.deepEquals(toList(), other.toList())  }
+
+  override fun hashCode(): Int = toList().hashCode()
+}
 private open class MessagesPigeonCodec : StandardMessageCodec() {
   override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? {
     return when (type) {
       129.toByte() -> {
+        return (readValue(buffer) as Long?)?.let {
+          HeadingSource.ofRaw(it.toInt())
+        }
+      }
+      130.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           FieldOfViewResponse.fromList(it)
+        }
+      }
+      131.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          PoseSample.fromList(it)
         }
       }
       else -> super.readValueOfType(type, buffer)
@@ -127,8 +227,16 @@ private open class MessagesPigeonCodec : StandardMessageCodec() {
   }
   override fun writeValue(stream: ByteArrayOutputStream, value: Any?)   {
     when (value) {
-      is FieldOfViewResponse -> {
+      is HeadingSource -> {
         stream.write(129)
+        writeValue(stream, value.raw)
+      }
+      is FieldOfViewResponse -> {
+        stream.write(130)
+        writeValue(stream, value.toList())
+      }
+      is PoseSample -> {
+        stream.write(131)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -136,14 +244,36 @@ private open class MessagesPigeonCodec : StandardMessageCodec() {
   }
 }
 
+val MessagesPigeonMethodCodec = StandardMethodCodec(MessagesPigeonCodec())
+
 /**
  * Host API for getting camera field of view information.
  *
  * Generated interface from Pigeon that represents a handler of messages from Flutter.
  */
 interface FieldOfViewHostApi {
-  /** Gets the field of view from the device's back camera. */
+  /**
+   * Gets the field of view from the device's back camera, for the full
+   * sensor in its default format.
+   */
   fun getFieldOfView(): FieldOfViewResponse
+  /**
+   * The field of view of the stream a running camera delivers.
+   *
+   * [cameraId] is the platform's id of the camera (the `camera` package's
+   * `CameraDescription.name`); null picks the back wide camera. [width]
+   * and [height] are the stream's size in pixels, in the sensor's own
+   * (landscape) orientation. Call it after the camera has started: the
+   * angles depend on the format the session chose.
+   */
+  fun getStreamFieldOfView(cameraId: String?, width: Long, height: Long): FieldOfViewResponse
+  /** Chooses what the pose stream's azimuth is measured against. */
+  fun setHeadingSource(source: HeadingSource)
+  /**
+   * Where the device is, for the magnetic declination (Android; iOS works
+   * it out from its own location).
+   */
+  fun setLocation(latitude: Double, longitude: Double, altitude: Double)
 
   companion object {
     /** The codec used by FieldOfViewHostApi. */
@@ -169,6 +299,113 @@ interface FieldOfViewHostApi {
           channel.setMessageHandler(null)
         }
       }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.getStreamFieldOfView$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val cameraIdArg = args[0] as String?
+            val widthArg = args[1] as Long
+            val heightArg = args[2] as Long
+            val wrapped: List<Any?> = try {
+              listOf(api.getStreamFieldOfView(cameraIdArg, widthArg, heightArg))
+            } catch (exception: Throwable) {
+              MessagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.setHeadingSource$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val sourceArg = args[0] as HeadingSource
+            val wrapped: List<Any?> = try {
+              api.setHeadingSource(sourceArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              MessagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.setLocation$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val latitudeArg = args[0] as Double
+            val longitudeArg = args[1] as Double
+            val altitudeArg = args[2] as Double
+            val wrapped: List<Any?> = try {
+              api.setLocation(latitudeArg, longitudeArg, altitudeArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              MessagesPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
     }
   }
 }
+
+private class MessagesPigeonStreamHandler<T>(
+    val wrapper: MessagesPigeonEventChannelWrapper<T>
+) : EventChannel.StreamHandler {
+  var pigeonSink: PigeonEventSink<T>? = null
+
+  override fun onListen(p0: Any?, sink: EventChannel.EventSink) {
+    pigeonSink = PigeonEventSink<T>(sink)
+    wrapper.onListen(p0, pigeonSink!!)
+  }
+
+  override fun onCancel(p0: Any?) {
+    pigeonSink = null
+    wrapper.onCancel(p0)
+  }
+}
+
+interface MessagesPigeonEventChannelWrapper<T> {
+  open fun onListen(p0: Any?, sink: PigeonEventSink<T>) {}
+
+  open fun onCancel(p0: Any?) {}
+}
+
+class PigeonEventSink<T>(private val sink: EventChannel.EventSink) {
+  fun success(value: T) {
+    sink.success(value)
+  }
+
+  fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+    sink.error(errorCode, errorMessage, errorDetails)
+  }
+
+  fun endOfStream() {
+    sink.endOfStream()
+  }
+}
+      
+abstract class PoseSamplesStreamHandler : MessagesPigeonEventChannelWrapper<PoseSample> {
+  companion object {
+    fun register(messenger: BinaryMessenger, streamHandler: PoseSamplesStreamHandler, instanceName: String = "") {
+      var channelName: String = "dev.flutter.pigeon.field_of_view.PoseEvents.poseSamples"
+      if (instanceName.isNotEmpty()) {
+        channelName += ".$instanceName"
+      }
+      val internalStreamHandler = MessagesPigeonStreamHandler<PoseSample>(streamHandler)
+      EventChannel(messenger, channelName, MessagesPigeonMethodCodec).setStreamHandler(internalStreamHandler)
+    }
+  }
+}
+      

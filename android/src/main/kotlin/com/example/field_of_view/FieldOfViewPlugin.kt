@@ -11,14 +11,58 @@ import kotlin.math.atan
 class FieldOfViewPlugin : FlutterPlugin, FieldOfViewHostApi {
 
     private lateinit var context: Context
+    private var poses: PoseStream? = null
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         context = flutterPluginBinding.applicationContext
         FieldOfViewHostApi.setUp(flutterPluginBinding.binaryMessenger, this)
+        poses = PoseStream(context).also {
+            PoseSamplesStreamHandler.register(flutterPluginBinding.binaryMessenger, it)
+        }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         FieldOfViewHostApi.setUp(binding.binaryMessenger, null)
+        poses?.stop()
+        poses = null
+    }
+
+    override fun setHeadingSource(source: HeadingSource) {
+        poses?.setSource(source)
+    }
+
+    override fun setLocation(latitude: Double, longitude: Double, altitude: Double) {
+        poses?.setLocation(latitude, longitude, altitude)
+    }
+
+    override fun getStreamFieldOfView(cameraId: String?, width: Long, height: Long): FieldOfViewResponse {
+        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val id = cameraId?.takeIf { it in cameraManager.cameraIdList }
+            ?: cameraManager.cameraIdList.firstOrNull { candidate ->
+                cameraManager.getCameraCharacteristics(candidate)
+                    .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+            }
+            ?: throw FlutterError("CAMERA_UNAVAILABLE", "No back camera available", null)
+        val characteristics = cameraManager.getCameraCharacteristics(id)
+        val sensorSize: SizeF = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+            ?: throw FlutterError("SENSOR_UNAVAILABLE", "Could not get sensor size", null)
+        val focalLength = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            ?.firstOrNull()
+            ?: throw FlutterError("FOCAL_LENGTH_UNAVAILABLE", "No focal lengths available", null)
+        val pixels = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+        val active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val (horizontal, vertical) = Geometry.streamFieldOfView(
+            sensorWidthMm = sensorSize.width,
+            sensorHeightMm = sensorSize.height,
+            pixelArrayWidth = pixels?.width ?: 0,
+            pixelArrayHeight = pixels?.height ?: 0,
+            activeWidth = active?.width() ?: 0,
+            activeHeight = active?.height() ?: 0,
+            focalLengthMm = focalLength,
+            streamWidth = width.toInt(),
+            streamHeight = height.toInt(),
+        )
+        return FieldOfViewResponse(horizontalFov = horizontal, verticalFov = vertical)
     }
 
     override fun getFieldOfView(): FieldOfViewResponse {

@@ -14,27 +14,39 @@ PlatformException _createConnectionError(String channelName) {
     message: 'Unable to establish connection on channel: "$channelName".',
   );
 }
+
 bool _deepEquals(Object? a, Object? b) {
   if (a is List && b is List) {
     return a.length == b.length &&
-        a.indexed
-        .every(((int, dynamic) item) => _deepEquals(item.$2, b[item.$1]));
+        a.indexed.every(
+          ((int, dynamic) item) => _deepEquals(item.$2, b[item.$1]),
+        );
   }
   if (a is Map && b is Map) {
-    return a.length == b.length && a.entries.every((MapEntry<Object?, Object?> entry) =>
-        (b as Map<Object?, Object?>).containsKey(entry.key) &&
-        _deepEquals(entry.value, b[entry.key]));
+    return a.length == b.length &&
+        a.entries.every(
+          (MapEntry<Object?, Object?> entry) =>
+              (b as Map<Object?, Object?>).containsKey(entry.key) &&
+              _deepEquals(entry.value, b[entry.key]),
+        );
   }
   return a == b;
 }
 
+/// What the heading of a [PoseSample] is measured against.
+enum HeadingSource {
+  /// Gyroscope, accelerometer and compass fused: degrees from true north
+  /// (see [PoseSample.trueNorth]), as wrong as the compass is.
+  fused,
+
+  /// Gyroscope and accelerometer only: degrees from wherever the device
+  /// pointed when the source was chosen. No compass error, a slow drift.
+  gyro,
+}
 
 /// Response containing field of view information from the camera.
 class FieldOfViewResponse {
-  FieldOfViewResponse({
-    required this.horizontalFov,
-    required this.verticalFov,
-  });
+  FieldOfViewResponse({required this.horizontalFov, required this.verticalFov});
 
   /// Horizontal field of view in degrees.
   double horizontalFov;
@@ -43,14 +55,12 @@ class FieldOfViewResponse {
   double verticalFov;
 
   List<Object?> _toList() {
-    return <Object?>[
-      horizontalFov,
-      verticalFov,
-    ];
+    return <Object?>[horizontalFov, verticalFov];
   }
 
   Object encode() {
-    return _toList();  }
+    return _toList();
+  }
 
   static FieldOfViewResponse decode(Object result) {
     result as List<Object?>;
@@ -74,10 +84,92 @@ class FieldOfViewResponse {
 
   @override
   // ignore: avoid_equals_and_hash_code_on_mutable_classes
-  int get hashCode => Object.hashAll(_toList())
-;
+  int get hashCode => Object.hashAll(_toList());
 }
 
+/// Where the back camera points.
+class PoseSample {
+  PoseSample({
+    required this.azimuth,
+    required this.pitch,
+    required this.roll,
+    required this.accuracy,
+    required this.source,
+    required this.trueNorth,
+    required this.timestampMs,
+  });
+
+  /// The bearing of the camera's axis, degrees clockwise, 0–360. From north
+  /// with [HeadingSource.fused]; from an arbitrary direction with
+  /// [HeadingSource.gyro].
+  double azimuth;
+
+  /// The camera axis above the horizontal, degrees (−90 … 90).
+  double pitch;
+
+  /// The rotation of the device about the camera's axis, degrees: 0 with
+  /// the device upright in portrait, positive when its right edge is
+  /// higher than its left.
+  double roll;
+
+  /// The platform's estimate of the heading error, degrees; negative when
+  /// it has none.
+  double accuracy;
+
+  HeadingSource source;
+
+  /// Whether a fused azimuth is from true north. False when the platform
+  /// could only give magnetic north (no position to work out the
+  /// declination from).
+  bool trueNorth;
+
+  int timestampMs;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      azimuth,
+      pitch,
+      roll,
+      accuracy,
+      source,
+      trueNorth,
+      timestampMs,
+    ];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static PoseSample decode(Object result) {
+    result as List<Object?>;
+    return PoseSample(
+      azimuth: result[0]! as double,
+      pitch: result[1]! as double,
+      roll: result[2]! as double,
+      accuracy: result[3]! as double,
+      source: result[4]! as HeadingSource,
+      trueNorth: result[5]! as bool,
+      timestampMs: result[6]! as int,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! PoseSample || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(encode(), other.encode());
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => Object.hashAll(_toList());
+}
 
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
@@ -86,8 +178,14 @@ class _PigeonCodec extends StandardMessageCodec {
     if (value is int) {
       buffer.putUint8(4);
       buffer.putInt64(value);
-    }    else if (value is FieldOfViewResponse) {
+    } else if (value is HeadingSource) {
       buffer.putUint8(129);
+      writeValue(buffer, value.index);
+    } else if (value is FieldOfViewResponse) {
+      buffer.putUint8(130);
+      writeValue(buffer, value.encode());
+    } else if (value is PoseSample) {
+      buffer.putUint8(131);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -97,36 +195,52 @@ class _PigeonCodec extends StandardMessageCodec {
   @override
   Object? readValueOfType(int type, ReadBuffer buffer) {
     switch (type) {
-      case 129: 
+      case 129:
+        final int? value = readValue(buffer) as int?;
+        return value == null ? null : HeadingSource.values[value];
+      case 130:
         return FieldOfViewResponse.decode(readValue(buffer)!);
+      case 131:
+        return PoseSample.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
     }
   }
 }
 
+const StandardMethodCodec pigeonMethodCodec = StandardMethodCodec(
+  _PigeonCodec(),
+);
+
 /// Host API for getting camera field of view information.
 class FieldOfViewHostApi {
   /// Constructor for [FieldOfViewHostApi].  The [binaryMessenger] named argument is
   /// available for dependency injection.  If it is left null, the default
   /// BinaryMessenger will be used which routes to the host platform.
-  FieldOfViewHostApi({BinaryMessenger? binaryMessenger, String messageChannelSuffix = ''})
-      : pigeonVar_binaryMessenger = binaryMessenger,
-        pigeonVar_messageChannelSuffix = messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
+  FieldOfViewHostApi({
+    BinaryMessenger? binaryMessenger,
+    String messageChannelSuffix = '',
+  }) : pigeonVar_binaryMessenger = binaryMessenger,
+       pigeonVar_messageChannelSuffix = messageChannelSuffix.isNotEmpty
+           ? '.$messageChannelSuffix'
+           : '';
   final BinaryMessenger? pigeonVar_binaryMessenger;
 
   static const MessageCodec<Object?> pigeonChannelCodec = _PigeonCodec();
 
   final String pigeonVar_messageChannelSuffix;
 
-  /// Gets the field of view from the device's back camera.
+  /// Gets the field of view from the device's back camera, for the full
+  /// sensor in its default format.
   Future<FieldOfViewResponse> getFieldOfView() async {
-    final String pigeonVar_channelName = 'dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.getFieldOfView$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+    final String pigeonVar_channelName =
+        'dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.getFieldOfView$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel =
+        BasicMessageChannel<Object?>(
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_sendFuture as List<Object?>?;
@@ -147,4 +261,121 @@ class FieldOfViewHostApi {
       return (pigeonVar_replyList[0] as FieldOfViewResponse?)!;
     }
   }
+
+  /// The field of view of the stream a running camera delivers.
+  ///
+  /// [cameraId] is the platform's id of the camera (the `camera` package's
+  /// `CameraDescription.name`); null picks the back wide camera. [width]
+  /// and [height] are the stream's size in pixels, in the sensor's own
+  /// (landscape) orientation. Call it after the camera has started: the
+  /// angles depend on the format the session chose.
+  Future<FieldOfViewResponse> getStreamFieldOfView(
+    String? cameraId,
+    int width,
+    int height,
+  ) async {
+    final String pigeonVar_channelName =
+        'dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.getStreamFieldOfView$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel =
+        BasicMessageChannel<Object?>(
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(
+      <Object?>[cameraId, width, height],
+    );
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as FieldOfViewResponse?)!;
+    }
+  }
+
+  /// Chooses what the pose stream's azimuth is measured against.
+  Future<void> setHeadingSource(HeadingSource source) async {
+    final String pigeonVar_channelName =
+        'dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.setHeadingSource$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel =
+        BasicMessageChannel<Object?>(
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(
+      <Object?>[source],
+    );
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// Where the device is, for the magnetic declination (Android; iOS works
+  /// it out from its own location).
+  Future<void> setLocation(
+    double latitude,
+    double longitude,
+    double altitude,
+  ) async {
+    final String pigeonVar_channelName =
+        'dev.flutter.pigeon.field_of_view.FieldOfViewHostApi.setLocation$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel =
+        BasicMessageChannel<Object?>(
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(
+      <Object?>[latitude, longitude, altitude],
+    );
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+}
+
+Stream<PoseSample> poseSamples({String instanceName = ''}) {
+  if (instanceName.isNotEmpty) {
+    instanceName = '.$instanceName';
+  }
+  final EventChannel poseSamplesChannel = EventChannel(
+    'dev.flutter.pigeon.field_of_view.PoseEvents.poseSamples$instanceName',
+    pigeonMethodCodec,
+  );
+  return poseSamplesChannel.receiveBroadcastStream().map((dynamic event) {
+    return event as PoseSample;
+  });
 }
