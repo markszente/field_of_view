@@ -80,7 +80,7 @@ final subscription = fov.poses.listen((pose) {
 `setHeadingSource(HeadingSource.gyro)` is for holding an alignment the user made by hand: take the difference between the last fused azimuth and the first gyro one as the offset. Every sample carries the source it was taken with.
 
 - **iOS**: `CMMotionManager` device motion in the `xTrueNorthZVertical` frame (`xArbitraryZVertical` for `gyro`). Accuracy is the calibrated magnetic field's (5 / 15 / 30°).
-- **Android**: `TYPE_ROTATION_VECTOR` plus the declination from `GeomagneticField` (`TYPE_GAME_ROTATION_VECTOR` for `gyro`). Accuracy is the sensor's own estimate where it gives one.
+- **Android**: Google Play services' fused orientation provider (`play-services-location` 21.2+), which calibrates the compass itself and behaves the same on every phone; accuracy is its heading error. Without Play services: `TYPE_ROTATION_VECTOR` plus the declination from `GeomagneticField`. That sensor is each manufacturer's own, and on a Redmi Note 11 its north stood up to 95° from the magnetometer's. `TYPE_GAME_ROTATION_VECTOR` for `gyro`.
 
 ## Error handling
 

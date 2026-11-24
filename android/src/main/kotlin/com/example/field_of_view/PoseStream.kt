@@ -6,17 +6,33 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.util.Log
+import com.google.android.gms.location.DeviceOrientation
+import com.google.android.gms.location.DeviceOrientationListener
+import com.google.android.gms.location.DeviceOrientationRequest
+import com.google.android.gms.location.FusedOrientationProviderClient
+import com.google.android.gms.location.LocationServices
+import java.util.concurrent.Executor
 
 /**
- * The camera's direction from the rotation-vector sensors.
+ * The camera's direction.
  *
- * [HeadingSource.FUSED] reads TYPE_ROTATION_VECTOR (gyroscope, accelerometer
- * and compass) and adds the magnetic declination, so the bearing is from
- * true north once [setLocation] was called. [HeadingSource.GYRO] reads
- * TYPE_GAME_ROTATION_VECTOR, which never looks at the compass: its bearing
- * is from an arbitrary direction and only drifts.
+ * [HeadingSource.FUSED] reads Google Play services' fused orientation
+ * provider, which calibrates the compass itself and is the same on every
+ * phone. The platform's own TYPE_ROTATION_VECTOR is each manufacturer's:
+ * on a Redmi Note 11 (2026-11-24) its north stood 95° from the
+ * magnetometer's with the phone lying flat and 19° with it upright, while
+ * Google Maps on the same phone agreed with the magnetometer. It is read
+ * only where Play services cannot be (no Play services, or the request
+ * fails), with the magnetic declination added once [setLocation] was
+ * called.
+ *
+ * [HeadingSource.GYRO] reads TYPE_GAME_ROTATION_VECTOR, which never looks
+ * at the compass: its bearing is from an arbitrary direction and only
+ * drifts.
  */
-class PoseStream(context: Context) : PoseSamplesStreamHandler(), SensorEventListener {
+class PoseStream(private val context: Context) :
+    PoseSamplesStreamHandler(), SensorEventListener, DeviceOrientationListener {
 
     private val sensors = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private var sink: PigeonEventSink<PoseSample>? = null
@@ -26,6 +42,17 @@ class PoseStream(context: Context) : PoseSamplesStreamHandler(), SensorEventList
     private var compassStatus = SensorManager.SENSOR_STATUS_ACCURACY_HIGH
     private val matrix = FloatArray(9)
     private val vector = FloatArray(4)
+
+    private var orientation: FusedOrientationProviderClient? = null
+
+    // Counts the starts, so that a request that fails after the stream has
+    // moved on changes nothing.
+    private var generation = 0
+
+    // The plugin's callbacks arrive on the thread the stream was listened
+    // to on; Play services' are sent there too.
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val executor = Executor { handler.post(it) }
 
     override fun onListen(p0: Any?, sink: PigeonEventSink<PoseSample>) {
         this.sink = sink
@@ -53,25 +80,75 @@ class PoseStream(context: Context) : PoseSamplesStreamHandler(), SensorEventList
     }
 
     fun stop() {
+        generation++
         sensors.unregisterListener(this)
+        orientation?.removeOrientationUpdates(this)
+        orientation = null
         listening = null
     }
 
     private fun start() {
         stop()
-        // A phone without the gyro-only sensor keeps the fused one.
-        val gyro = if (wanted == HeadingSource.GYRO) {
-            sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
-        } else {
-            null
+        if (wanted == HeadingSource.GYRO) {
+            // A phone without the gyro-only sensor keeps the fused source.
+            val gyro = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+            if (gyro != null) {
+                listening = HeadingSource.GYRO
+                sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME)
+                return
+            }
         }
-        val sensor = gyro ?: sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        val started = generation
+        try {
+            val client = LocationServices.getFusedOrientationProviderClient(context)
+            val request = DeviceOrientationRequest.Builder(
+                DeviceOrientationRequest.OUTPUT_PERIOD_DEFAULT
+            ).build()
+            orientation = client
+            listening = HeadingSource.FUSED
+            client.requestOrientationUpdates(request, executor, this).addOnFailureListener {
+                Log.w(TAG, "fused orientation unavailable, reading the rotation vector", it)
+                if (generation == started) {
+                    orientation = null
+                    startRotationVector()
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "fused orientation unavailable, reading the rotation vector", e)
+            orientation = null
+            startRotationVector()
+        }
+    }
+
+    private fun startRotationVector() {
+        val sensor = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         if (sensor == null) {
+            listening = null
             sink?.error("SENSOR_UNAVAILABLE", "No rotation vector sensor", null)
             return
         }
-        listening = if (gyro != null) HeadingSource.GYRO else HeadingSource.FUSED
+        listening = HeadingSource.FUSED
         sensors.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
+    }
+
+    /** Play services' orientation: device → east-north-up, as the rotation vector's. */
+    override fun onDeviceOrientationChanged(sample: DeviceOrientation) {
+        if (orientation == null || listening != HeadingSource.FUSED) return
+        SensorManager.getRotationMatrixFromVector(matrix, sample.attitude)
+        val (azimuth, pitch, roll) = Geometry.cameraDirection(matrix)
+        sink?.success(
+            PoseSample(
+                azimuth = azimuth,
+                pitch = pitch,
+                roll = roll,
+                accuracy = sample.headingErrorDegrees.toDouble(),
+                source = HeadingSource.FUSED,
+                // Its north is the true one once it knows the declination,
+                // which it takes from the device's location itself.
+                trueNorth = true,
+                timestampMs = sample.elapsedRealtimeNs / 1_000_000,
+            )
+        )
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -118,5 +195,9 @@ class PoseStream(context: Context) : PoseSamplesStreamHandler(), SensorEventList
 
     override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
         if (sensor.type == Sensor.TYPE_ROTATION_VECTOR) compassStatus = accuracy
+    }
+
+    private companion object {
+        const val TAG = "FieldOfView"
     }
 }
