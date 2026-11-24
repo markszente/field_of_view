@@ -7,6 +7,8 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.util.Log
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailabilityLight
 import com.google.android.gms.location.DeviceOrientation
 import com.google.android.gms.location.DeviceOrientationListener
 import com.google.android.gms.location.DeviceOrientationRequest
@@ -54,6 +56,16 @@ class PoseStream(private val context: Context) :
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val executor = Executor { handler.post(it) }
 
+    // With Play services disabled the request for its orientation neither
+    // succeeds nor fails: it waits for the user to enable them (seen on an
+    // emulator, 2026-11-24: no pose at all, for good). So the rotation
+    // vector is also read where Play services are missing or disabled to
+    // begin with, and where nothing has come within [WATCHDOG_MS]; a
+    // sample from Play services after that takes over again.
+    private var watchdog: Runnable? = null
+    private var provided = false
+    private var onRotationVector = false
+
     override fun onListen(p0: Any?, sink: PigeonEventSink<PoseSample>) {
         this.sink = sink
         start()
@@ -81,6 +93,10 @@ class PoseStream(private val context: Context) :
 
     fun stop() {
         generation++
+        watchdog?.let(handler::removeCallbacks)
+        watchdog = null
+        provided = false
+        onRotationVector = false
         sensors.unregisterListener(this)
         orientation?.removeOrientationUpdates(this)
         orientation = null
@@ -99,6 +115,19 @@ class PoseStream(private val context: Context) :
             }
         }
         val started = generation
+        if (!playServicesThere()) {
+            Log.w(TAG, "no play services, reading the rotation vector")
+            startRotationVector()
+            return
+        }
+        val task = Runnable {
+            if (generation == started && !provided && sink != null) {
+                Log.w(TAG, "no fused orientation yet, reading the rotation vector meanwhile")
+                startRotationVector()
+            }
+        }
+        watchdog = task
+        handler.postDelayed(task, WATCHDOG_MS)
         try {
             val client = LocationServices.getFusedOrientationProviderClient(context)
             val request = DeviceOrientationRequest.Builder(
@@ -120,20 +149,43 @@ class PoseStream(private val context: Context) :
         }
     }
 
+    // Missing, disabled or not Google's own: nothing will answer. An old
+    // version is asked all the same (it has answered).
+    private fun playServicesThere(): Boolean = try {
+        when (GoogleApiAvailabilityLight.getInstance().isGooglePlayServicesAvailable(context)) {
+            ConnectionResult.SERVICE_MISSING,
+            ConnectionResult.SERVICE_DISABLED,
+            ConnectionResult.SERVICE_INVALID -> false
+            else -> true
+        }
+    } catch (e: Throwable) {
+        false
+    }
+
     private fun startRotationVector() {
+        if (onRotationVector) return
         val sensor = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         if (sensor == null) {
+            // Still waiting for Play services: they may answer yet.
+            if (orientation != null) return
             listening = null
             sink?.error("SENSOR_UNAVAILABLE", "No rotation vector sensor", null)
             return
         }
         listening = HeadingSource.FUSED
+        onRotationVector = true
         sensors.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
     }
 
     /** Play services' orientation: device → east-north-up, as the rotation vector's. */
     override fun onDeviceOrientationChanged(sample: DeviceOrientation) {
         if (orientation == null || listening != HeadingSource.FUSED) return
+        provided = true
+        if (onRotationVector) {
+            // Play services answered after all: theirs is the better one.
+            sensors.unregisterListener(this)
+            onRotationVector = false
+        }
         SensorManager.getRotationMatrixFromVector(matrix, sample.attitude)
         val (azimuth, pitch, roll) = Geometry.cameraDirection(matrix)
         sink?.success(
@@ -199,5 +251,6 @@ class PoseStream(private val context: Context) :
 
     private companion object {
         const val TAG = "FieldOfView"
+        const val WATCHDOG_MS = 3000L
     }
 }
